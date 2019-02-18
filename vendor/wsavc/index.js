@@ -13,19 +13,24 @@ var WSAvcPlayer = new Class({
   Implements : [Events],
 
 
-  initialize : function(canvas, canvastype) {
+  initialize : function(canvas, canvastype, splitNalUnit) {
 
     this.canvas     = canvas;
     this.canvastype = canvastype;
+    this.splitNalUnit = splitNalUnit;
+    this.rawVideo = [];
+    this.frames = [];
+    this.intervalIds = [];
+    this.mlock = false;
 
     // AVC codec initialization
     this.avc = new Avc();
-    if(false) this.avc.configure({
-      filter: "original",
-      filterHorLuma: "optimized",
-      filterVerLumaEdge: "optimized",
-      getBoundaryStrengthsA: "optimized"
-    });
+    // if(false) this.avc.configure({
+    //   filter: "original",
+    //   filterHorLuma: "optimized",
+    //   filterVerLumaEdge: "optimized",
+    //   getBoundaryStrengthsA: "optimized"
+    // });
 
     //WebSocket variable
     this.ws;
@@ -69,20 +74,74 @@ var WSAvcPlayer = new Class({
       log("Connected to " + url);
     };
 
+    var decodeWSBinary = function (data) {
+      if (!this.splitNalUnit) {
+        this.pktnum++;
+        var frame = new Uint8Array(data);
+        this.frames.push(frame);
+      } else {
+        if (this.mlock) {
+          return decodeWSBinary(data);
+        }
+        this.mlock = true;
 
-    var framesList = [];
+        // copy data to raw video
+        var videoFrame = new Uint8Array(data);
+        for (var i=0; i<videoFrame.length; i++) {
+          this.rawVideo.push(videoFrame[i]);
+        }
+        this.mlock = false;
+      }
+    }.bind(this);
+
+    var decodeVideoFrame = function() {
+      if (this.mlock) {
+        return;
+      }
+      this.mlock = true;
+      var start = 0;
+      var end = 0;
+      var totalLength = this.rawVideo.length;
+      var nal = [0,0,0,1];
+      var nalLength = nal.length;
+
+      for (var i=start; i<totalLength; i++) {
+        var isMatch = true;
+        for (var j=0; j<nal.length; j++) {
+            if (this.rawVideo[i+j] != nal[j]) {
+            isMatch = false
+            break
+            }
+        }
+        if (isMatch) {
+            if (start == 0) {
+              start = i + nalLength
+            } else {
+              end = i
+              break
+            }
+        } else if (j > 0) {
+            i += j
+        }
+      }
+      if (start >= 0 && end > 0) {
+        // got data
+        var frame = new Uint8Array(this.rawVideo.splice(start - nalLength, end))
+        this.pktnum++;
+        this.frames.push(frame);
+      }
+      this.mlock = false;
+    }.bind(this);
+
+    // decode video frame
+    this.intervalIds.push(window.setInterval(decodeVideoFrame, 90));
 
     this.ws.onmessage = (evt) => {
       if(typeof evt.data == "string")
         return this.cmd(JSON.parse(evt.data));
 
-      this.pktnum++;
-      var frame = new Uint8Array(evt.data);
-      //log("[Pkt " + this.pktnum + " (" + evt.data.byteLength + " bytes)]");
-      //this.decode(frame);
-      framesList.push(frame);
+      decodeWSBinary(evt.data);
     };
-
 
     var running = true;
 
@@ -90,14 +149,12 @@ var WSAvcPlayer = new Class({
       if(!running)
         return;
 
-
-      if(framesList.length > 10) {
-        log("Dropping frames", framesList.length);
-        framesList = [];
+      if(this.frames.length > 10) {
+        log("Dropping frames", this.frames);
+        this.frames = [];
       }
 
-      var frame = framesList.shift();
-
+      var frame = this.frames.shift();
 
       if(frame)
         this.decode(frame);
@@ -105,10 +162,7 @@ var WSAvcPlayer = new Class({
       requestAnimationFrame(shiftFrame);
     }.bind(this);
 
-
     shiftFrame();
-
-
 
     this.ws.onclose = () => {
       running = false;
@@ -139,10 +193,18 @@ var WSAvcPlayer = new Class({
 
   disconnect : function() {
     this.ws.close();
+    this.intervalIds.forEach(function (id) {
+      window.clearInterval(id);
+    });
   },
 
   playStream : function() {
-    var message = "REQUESTSTREAM ";
+    var message = "";
+    if (this.splitNalUnit) {
+      message = "REQUESTRAWSTREAM ";
+    } else {
+      message = "REQUESTSTREAM ";
+    }
     this.ws.send(message);
     log("Sent " + message);
   },
