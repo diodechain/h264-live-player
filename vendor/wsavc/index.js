@@ -214,6 +214,16 @@ var WSAvcPlayer = new Class({
     this.ws.send("STOPSTREAM");
     log("Sent STOPSTREAM");
   },
+
+  pushRawVideo : function(rawVideoFrame) {
+    if (rawVideoFrame.length <= 0) {
+      return
+    }
+    rawVideoFrame = new Uint8Array(rawVideoFrame);
+    for (var i=0; i<rawVideoFrame.length; i++) {
+      this.rawVideo.push(rawVideoFrame[i]);
+    }
+  },
 });
 
 
