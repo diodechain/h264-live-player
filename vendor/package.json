@@ -4,6 +4,7 @@
   "main": "wsavc/index.js",
   "scripts": {
     "dist": "browserify  --bare --standalone WSAvcPlayer --plugin discify wsavc/ > dist/http-live-player.js",
+    "dist-prod": "browserify  --bare --standalone WSAvcPlayer -g uglifyify --plugin discify wsavc/ > dist/http-live-player.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "browserify": "^13.0.0",
-    "discify": "^1.4.2"
+    "discify": "^1.4.2",
+    "uglifyify": "^5.0.1"
   }
 }

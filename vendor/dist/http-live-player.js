@@ -967,7 +967,7 @@ function A(a){a&&(p.print(a),p.fa(a));H=i;d("abort() at "+Fa()+"\nIf this abort(
 }));
 
 
-}).call(this,"/Users/peterlai/h264-live-player/vendor/broadway")
+}).call(this,"/home/dominicletz/projects/exosite2/h264-live-player/vendor/broadway")
 },{}],2:[function(require,module,exports){
 "use strict";
 var assert = require('../utils/assert');
@@ -5078,6 +5078,12 @@ var WSAvcPlayer = new Class({
     this.frames = [];
     this.intervalIds = [];
     this.mlock = false;
+    this.now = Date.now();
+    this.second_acc = 0;
+    this.frame_acc = 0;
+    this.call_acc = 0;
+    this.fps_avg = 10;
+
 
     // AVC codec initialization
     this.avc = new Avc();
@@ -5143,9 +5149,7 @@ var WSAvcPlayer = new Class({
 
         // copy data to raw video
         var videoFrame = new Uint8Array(data);
-        for (var i=0; i<videoFrame.length; i++) {
-          this.rawVideo.push(videoFrame[i]);
-        }
+        this.rawVideo.push.apply(this.rawVideo, videoFrame)
         this.mlock = false;
       }
     }.bind(this);
@@ -5158,39 +5162,45 @@ var WSAvcPlayer = new Class({
       var start = 0;
       var end = 0;
       var totalLength = this.rawVideo.length;
-      var nal = [0,0,0,1];
-      var nalLength = nal.length;
 
-      for (var i=start; i<totalLength; i++) {
-        var isMatch = true;
-        for (var j=0; j<nal.length; j++) {
-            if (this.rawVideo[i+j] != nal[j]) {
-            isMatch = false
-            break
-            }
-        }
-        if (isMatch) {
-            if (start == 0) {
-              start = i + nalLength
-            } else {
-              end = i
-              break
-            }
-        } else if (j > 0) {
-            i += j
+      // 1 Second passed
+      var now = Date.now();
+      this.second_acc += now - this.now;
+      this.now = now;
+      if (this.second_acc > 1000) {
+        this.second_acc -= 1000;
+        var fps = this.frame_acc;
+        this.fps_avg = (this.fps_avg*4 + fps) / 5;
+        this.frame_acc = 0;
+        this.call_acc = 0;
+      }
+
+      for (var i=3; i<totalLength; i++) {
+        if (this.rawVideo[i] == 1 && this.rawVideo[i-1] == 0 && this.rawVideo[i-2] == 0 && this.rawVideo[i-3] == 0) {
+          if (start == 0) {
+            start = i + 1;
+          } else {
+            end = i - 3;
+            var frame = new Uint8Array(this.rawVideo.slice(start - 4, end))
+            this.pktnum++;
+            this.frames.push(frame);
+            start = end + 4;
+            end = 0;
+
+            this.frame_acc++;
+          }
         }
       }
-      if (start >= 0 && end > 0) {
-        // got data
-        var frame = new Uint8Array(this.rawVideo.splice(start - nalLength, end))
-        this.pktnum++;
-        this.frames.push(frame);
+      if (start > 0) {
+          this.rawVideo = this.rawVideo.slice(start - 4);
+      } else if (this.rawVideo.length > 3) {
+          this.rawVideo = this.rawVideo.slice(this.rawVideo.length - 3);
       }
       this.mlock = false;
     }.bind(this);
 
     // decode video frame
-    this.intervalIds.push(window.setInterval(decodeVideoFrame, 90));
+    this.intervalIds.push(window.setInterval(decodeVideoFrame, 100));
 
     this.ws.onmessage = (evt) => {
       if(typeof evt.data == "string")
@@ -5199,21 +5209,30 @@ var WSAvcPlayer = new Class({
       decodeWSBinary(evt.data);
     };
 
+    window.player = this;
     var running = true;
+    var ts = Date.now();
 
-    var shiftFrame = function() {
+    var shiftFrame = function(timestamp) {
       if(!running)
         return;
 
-      if(this.frames.length > 10) {
+      var incr = timestamp - ts;
+      ts = timestamp;          
+  
+      if(this.frames.length > 100) {
         log("Dropping frames", this.frames);
-        this.frames = [];
+        this.frames = this.frames.slice(70);
       }
 
-      var frame = this.frames.shift();
-
-      if(frame)
-        this.decode(frame);
+      this.call_acc -= this.fps_avg / (1000 / incr);
+      if (this.call_acc < 0) {
+        var frame = this.frames.shift();
+        if (frame) {
+          this.call_acc++;
+          this.decode(frame);
+        }
+      }
 
       requestAnimationFrame(shiftFrame);
     }.bind(this);
