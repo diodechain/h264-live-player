@@ -1,23 +1,25 @@
 "use strict";
 
-var Avc            = require('../broadway/Decoder');
-var YUVWebGLCanvas = require('../canvas/YUVWebGLCanvas');
-var YUVCanvas      = require('../canvas/YUVCanvas');
-var Size           = require('../utils/Size');
-var Class          = require('uclass');
-var Events         = require('uclass/events');
-var debug          = require('debug');
-var log            = debug("wsavc");
+let Avc            = require('../broadway/Decoder');
+let YUVWebGLCanvas = require('../canvas/YUVWebGLCanvas');
+let YUVCanvas      = require('../canvas/YUVCanvas');
+let Size           = require('../utils/Size');
+let Class          = require('uclass');
+let Events         = require('uclass/events');
+let debug          = require('debug');
+let log            = debug("wsavc");
 
-var WSAvcPlayer = new Class({
+let WSAvcPlayer = new Class({
   Implements : [Events],
 
 
-  initialize : function(canvas, canvastype, splitNalUnit) {
+  initialize : function(canvas, canvasType, splitNalUnit, fps, debugMode) {
 
     this.canvas     = canvas;
-    this.canvastype = canvastype;
-    this.splitNalUnit = splitNalUnit;
+    this.canvasType = canvasType;
+    this.splitNalUnit = splitNalUnit || false;
+    this.fps_avg = parseInt(fps) || 10;
+    this.debugMode = debugMode || false;
     this.rawVideo = [];
     this.frames = [];
     this.intervalIds = [];
@@ -26,7 +28,10 @@ var WSAvcPlayer = new Class({
     this.second_acc = 0;
     this.frame_acc = 0;
     this.call_acc = 0;
-    this.fps_avg = 10;
+
+    if (!this.canvas) {
+      this.canvas = this.createCanvas();
+    }
 
 
     // AVC codec initialization
@@ -46,7 +51,7 @@ var WSAvcPlayer = new Class({
 
 
   decode : function(data) {
-    var naltype = "invalid frame";
+    let naltype = "invalid frame";
 
     if (data.length > 4) {
       if (data[4] == 0x65) {
@@ -62,7 +67,9 @@ var WSAvcPlayer = new Class({
         naltype = "PPS";
       }
     }
-    //log("Passed " + naltype + " to decoder");
+    if (this.debugMode) {
+      log("Passed " + naltype + " to decoder");
+    }
     this.avc.decode(data);
   },
 
@@ -76,14 +83,17 @@ var WSAvcPlayer = new Class({
     this.ws = new WebSocket(url);
     this.ws.binaryType = "arraybuffer";
 
-    this.ws.onopen = () => {
-      log("Connected to " + url);
-    };
+    this.ws.onopen = function () {
+      if (this.debugMode) {
+        log("Connected to " + url);
+      }
+      this.emit('connected')
+    }.bind(this);
 
-    var decodeWSBinary = function (data) {
+    let decodeWSBinary = function (data) {
       if (!this.splitNalUnit) {
         this.pktnum++;
-        var frame = new Uint8Array(data);
+        let frame = new Uint8Array(data);
         this.frames.push(frame);
       } else {
         if (this.mlock) {
@@ -92,40 +102,40 @@ var WSAvcPlayer = new Class({
         this.mlock = true;
 
         // copy data to raw video
-        var videoFrame = new Uint8Array(data);
+        let videoFrame = new Uint8Array(data);
         this.rawVideo.push.apply(this.rawVideo, videoFrame)
         this.mlock = false;
       }
     }.bind(this);
 
-    var decodeVideoFrame = function() {
+    let decodeVideoFrame = function() {
       if (this.mlock) {
         return;
       }
       this.mlock = true;
-      var start = 0;
-      var end = 0;
-      var totalLength = this.rawVideo.length;
+      let start = 0;
+      let end = 0;
+      let totalLength = this.rawVideo.length;
 
       // 1 Second passed
-      var now = Date.now();
+      let now = Date.now();
       this.second_acc += now - this.now;
       this.now = now;
       if (this.second_acc > 1000) {
         this.second_acc -= 1000;
-        var fps = this.frame_acc;
+        let fps = this.frame_acc;
         this.fps_avg = (this.fps_avg*4 + fps) / 5;
         this.frame_acc = 0;
         this.call_acc = 0;
       }
 
-      for (var i=3; i<totalLength; i++) {
+      for (let i=3; i<totalLength; i++) {
         if (this.rawVideo[i] == 1 && this.rawVideo[i-1] == 0 && this.rawVideo[i-2] == 0 && this.rawVideo[i-3] == 0) {
           if (start == 0) {
             start = i + 1;
           } else {
             end = i - 3;
-            var frame = new Uint8Array(this.rawVideo.slice(start - 4, end))
+            let frame = new Uint8Array(this.rawVideo.slice(start - 4, end))
             this.pktnum++;
             this.frames.push(frame);
             start = end + 4;
@@ -146,7 +156,7 @@ var WSAvcPlayer = new Class({
     // decode video frame
     this.intervalIds.push(window.setInterval(decodeVideoFrame, 100));
 
-    this.ws.onmessage = (evt) => {
+    this.ws.onmessage = function (evt) {
       if(typeof evt.data == "string")
         return this.cmd(JSON.parse(evt.data));
 
@@ -154,24 +164,26 @@ var WSAvcPlayer = new Class({
     };
 
     window.player = this;
-    var running = true;
-    var ts = Date.now();
+    let running = true;
+    let ts = Date.now();
 
-    var shiftFrame = function(timestamp) {
+    let shiftFrame = function(timestamp) {
       if(!running)
         return;
 
-      var incr = timestamp - ts;
+      let incr = timestamp - ts;
       ts = timestamp;          
   
       if(this.frames.length > 100) {
-        log("Dropping frames", this.frames);
+        if (this.debugMode) {
+          log("Dropping frames", this.frames);
+        }
         this.frames = this.frames.slice(70);
       }
 
       this.call_acc -= this.fps_avg / (1000 / incr);
       if (this.call_acc < 0) {
-        var frame = this.frames.shift();
+        let frame = this.frames.shift();
         if (frame) {
           this.call_acc++;
           this.decode(frame);
@@ -183,31 +195,30 @@ var WSAvcPlayer = new Class({
 
     shiftFrame();
 
-    this.ws.onclose = () => {
+    this.ws.onclose = function () {
       running = false;
-      log("WSAvcPlayer: Connection closed")
-    };
+      if (this.debugMode) {
+        log("WSAvcPlayer: Connection closed")
+      }
+      this.emit("close");
+    }.bind(this);
 
   },
 
   initCanvas : function(width, height) {
-    var canvasFactory = this.canvastype == "webgl" || this.canvastype == "YUVWebGLCanvas"
+    let canvasFactory = this.canvasType == "webgl" || this.canvasType == "YUVWebGLCanvas"
                         ? YUVWebGLCanvas
                         : YUVCanvas;
 
-    var canvas = new canvasFactory(this.canvas, new Size(width, height));
+    let canvas = new canvasFactory(this.canvas, new Size(width, height));
     this.avc.onPictureDecoded = canvas.decode;
     this.emit("canvasReady", width, height);
   },
 
-  cmd : function(cmd){
-    log("Incoming request", cmd);
-
-    if(cmd.action == "init") {
-      this.initCanvas(cmd.width, cmd.height);
-      this.canvas.width  = cmd.width;
-      this.canvas.height = cmd.height;
-    }
+  createCanvas : function() {
+    const canvas = document.createElement('canvas');
+    document.body.appendChild(canvas);
+    return canvas
   },
 
   disconnect : function() {
@@ -217,29 +228,12 @@ var WSAvcPlayer = new Class({
     });
   },
 
-  playStream : function() {
-    var message = "";
-    if (this.splitNalUnit) {
-      message = "REQUESTRAWSTREAM ";
-    } else {
-      message = "REQUESTSTREAM ";
-    }
-    this.ws.send(message);
-    log("Sent " + message);
-  },
-
-
-  stopStream : function() {
-    this.ws.send("STOPSTREAM");
-    log("Sent STOPSTREAM");
-  },
-
   pushRawVideo : function(rawVideoFrame) {
     if (rawVideoFrame.length <= 0) {
       return
     }
     rawVideoFrame = new Uint8Array(rawVideoFrame);
-    for (var i=0; i<rawVideoFrame.length; i++) {
+    for (let i=0; i<rawVideoFrame.length; i++) {
       this.rawVideo.push(rawVideoFrame[i]);
     }
   },
